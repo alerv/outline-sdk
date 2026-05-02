@@ -60,10 +60,14 @@ jobs:
         run: go -C x tool staticcheck -tags psiphon ./...
 
       - name: Test SDK
+        # For synctest, until we upgrade to go 1.25.
+        env: { GOTOOLCHAIN: go1.25.9 }
         # Enable nettests, which executes external network requests.
         run: go test -tags nettest -race -bench '.' ./... -benchtime=100ms
 
       - name: Test x
+        # For synctest, until we upgrade to go 1.25.
+        env: { GOTOOLCHAIN: go1.25.9 }
         # Enable nettests, which executes external network requests.
         run: go test -C x -tags nettest,psiphon -race -bench '.' ./... -benchtime=100ms
 
