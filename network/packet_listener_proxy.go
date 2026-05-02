@@ -111,8 +111,9 @@ func WithPacketListenerWriteIdleTimeout(timeout time.Duration) func(*PacketListe
 	}
 }
 
-// NewSession implements [PacketProxy].NewSession function. It uses [transport.PacketListener].ListenPacket to create
-// a [net.PacketConn], and constructs a new [PacketRequestSender] that is based on this [net.PacketConn].
+// NewSession implements [PacketProxy].NewSession function. It constructs a new
+// [PacketRequestSender] backed by the configured [transport.PacketListener]. The
+// underlying [net.PacketConn] is created lazily on the first successful WriteTo.
 func (proxy *PacketListenerProxy) NewSession(respReceiver PacketResponseReceiver) (PacketRequestSender, error) {
 	if respReceiver == nil {
 		return nil, errors.New("respReceiver must not be nil")
