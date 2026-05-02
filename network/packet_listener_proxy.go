@@ -115,7 +115,7 @@ func WithPacketListenerWriteIdleTimeout(timeout time.Duration) func(*PacketListe
 // a [net.PacketConn], and constructs a new [PacketRequestSender] that is based on this [net.PacketConn].
 func (proxy *PacketListenerProxy) NewSession(respReceiver PacketResponseReceiver) (PacketRequestSender, error) {
 	if respReceiver == nil {
-		return nil, errors.New("respWriter must not be nil")
+		return nil, errors.New("respReceiver must not be nil")
 	}
 
 	reqSender := &packetListenerRequestSender{
@@ -221,8 +221,7 @@ func (s *packetListenerRequestSender) Close() error {
 	if conn != nil {
 		return conn.Close()
 	}
-	
-	// If proxyConn was never created, we must close respReceiver here
-	s.respReceiver.Close()
-	return nil
+
+	// If proxyConn was never created, we must close respReceiver here.
+	return s.respReceiver.Close()
 }
