@@ -50,10 +50,10 @@ func TestLazyPacketRelay_DeferredReceive(t *testing.T) {
 	}
 	lazy := NewLazyPacketRelay(mock)
 
-	_, receiver, err := lazy.NewAssociation()
+	sender, receiver, err := lazy.NewAssociation()
 	require.NoError(t, err)
 
-	// ReceivePackets blocks and triggers it
+	// ReceivePackets blocks but does NOT trigger association creation
 	handler := &mockPacketHandler{}
 	errChan := make(chan error, 1)
 	go func() {
@@ -62,7 +62,21 @@ func TestLazyPacketRelay_DeferredReceive(t *testing.T) {
 
 	// Give scheduling latency a moment
 	time.Sleep(30 * time.Millisecond)
+	require.Equal(t, 0, mock.Count())
+
+	// First send triggers it
+	err = sender.SendPacket([]byte("hello"), netip.MustParseAddrPort("1.2.3.4:53"))
+	require.NoError(t, err)
 	require.Equal(t, 1, mock.Count())
+
+	// Clean up
+	require.NoError(t, sender.Close())
+	select {
+	case err := <-errChan:
+		require.True(t, err == nil || errors.Is(err, ErrClosed), "expected error to be nil or ErrClosed, got: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for ReceivePackets to exit")
+	}
 }
 
 func TestLazyPacketRelay_CloseUnblock(t *testing.T) {
@@ -99,7 +113,7 @@ type mockSessionCountRelay struct {
 
 func (m *mockSessionCountRelay) NewAssociation() (PacketSender, PacketReceiver, error) {
 	m.cnt.Add(1)
-	
+
 	mockRelay := &mockPacketRelay{
 		closeSig: m.closeSig,
 	}
@@ -108,4 +122,78 @@ func (m *mockSessionCountRelay) NewAssociation() (PacketSender, PacketReceiver, 
 
 func (m *mockSessionCountRelay) Count() int {
 	return int(m.cnt.Load())
+}
+
+func TestLazyPacketRelay_ErrorPropagation(t *testing.T) {
+	expectedErr := errors.New("mock association failure")
+	mock := &mockFailureRelay{err: expectedErr}
+	lazy := NewLazyPacketRelay(mock)
+
+	sender, receiver, err := lazy.NewAssociation()
+	require.NoError(t, err)
+
+	// Verify that SendPacket propagates the error
+	err = sender.SendPacket([]byte("hello"), netip.MustParseAddrPort("1.2.3.4:53"))
+	require.ErrorIs(t, err, expectedErr)
+	require.Equal(t, 1, mock.attempts)
+
+	// Verify that a subsequent SendPacket returns the exact same cached error and DOES NOT retry.
+	err = sender.SendPacket([]byte("hello2"), netip.MustParseAddrPort("1.2.3.4:53"))
+	require.ErrorIs(t, err, expectedErr)
+	require.Equal(t, 1, mock.attempts, "NewAssociation should not be retried after a failure")
+
+	// Verify that ReceivePackets propagates the error and does NOT block forever
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- receiver.ReceivePackets(&mockPacketHandler{})
+	}()
+
+	select {
+	case err := <-errChan:
+		require.ErrorIs(t, err, expectedErr)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout: ReceivePackets blocked indefinitely on lazy initialization failure")
+	}
+}
+
+func TestLazyPacketRelay_ReceiveBeforeFailure(t *testing.T) {
+	expectedErr := errors.New("mock association failure")
+	mock := &mockFailureRelay{err: expectedErr}
+	lazy := NewLazyPacketRelay(mock)
+
+	sender, receiver, err := lazy.NewAssociation()
+	require.NoError(t, err)
+
+	// Start ReceivePackets first. It should block waiting for SendPacket.
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- receiver.ReceivePackets(&mockPacketHandler{})
+	}()
+
+	// Give scheduling latency a moment
+	time.Sleep(30 * time.Millisecond)
+	require.Equal(t, 0, mock.attempts)
+
+	// SendPacket triggers creation and fails
+	err = sender.SendPacket([]byte("hello"), netip.MustParseAddrPort("1.2.3.4:53"))
+	require.ErrorIs(t, err, expectedErr)
+	require.Equal(t, 1, mock.attempts)
+
+	// ReceivePackets must immediately unblock and propagate the error
+	select {
+	case err := <-errChan:
+		require.ErrorIs(t, err, expectedErr)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout: ReceivePackets blocked indefinitely on lazy initialization failure")
+	}
+}
+
+type mockFailureRelay struct {
+	err      error
+	attempts int
+}
+
+func (m *mockFailureRelay) NewAssociation() (PacketSender, PacketReceiver, error) {
+	m.attempts++
+	return nil, nil, m.err
 }
