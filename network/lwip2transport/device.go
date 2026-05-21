@@ -19,10 +19,10 @@ import (
 	"io"
 	"sync"
 
+	lwip "github.com/eycorsican/go-tun2socks/core"
 	"golang.getoutline.org/sdk/network"
 	"golang.getoutline.org/sdk/network/packetrelay"
 	"golang.getoutline.org/sdk/transport"
-	lwip "github.com/eycorsican/go-tun2socks/core"
 )
 
 const packetMTU = 1500
@@ -65,6 +65,8 @@ var inst *lwIPDevice = nil
 // A LwIP device is NOT thread-safe. However it is safe to use Write, Read/WriteTo and Close in different goroutines.
 // Keep in mind that only one goroutine can call Write at a time, and only one goroutine can use either Read or
 // WriteTo at a time.
+//
+// Deprecated: Use [ConfigureDeviceWithRelay] instead.
 //
 // [lwIP library]: https://savannah.nongnu.org/projects/lwip/
 func ConfigureDevice(sd transport.StreamDialer, pp network.PacketProxy) (network.IPDevice, error) {
