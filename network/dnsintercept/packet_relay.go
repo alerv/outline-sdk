@@ -274,8 +274,6 @@ func (a *interceptAssoc) getOrCreateDefaultSender() (packetrelay.PacketSender, e
 	return sender, err
 }
 
-
-
 // interceptSender implements packetrelay.PacketSender
 type interceptSender struct {
 	a *interceptAssoc

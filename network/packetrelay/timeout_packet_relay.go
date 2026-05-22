@@ -108,8 +108,16 @@ func (s *timeoutPacketSender) checkTimeout() {
 	// behavior (a successful send immediately followed by a close).
 	elapsed := time.Since(s.lastActivity)
 	if elapsed >= s.timeout {
+		// Two-phase close: set state under the lock, then call inner.Close() outside it.
+		// Calling s.Close() here instead would create a window between s.mu.Unlock() and
+		// s.Close() where a concurrent SendPacket could update lastActivity and succeed,
+		// only to have the association closed immediately after.
+		s.closed = true
+		s.timer.Stop()
+		inner := s.inner
+		s.inner = nil
 		s.mu.Unlock()
-		_ = s.Close()
+		_ = inner.Close()
 		return
 	}
 

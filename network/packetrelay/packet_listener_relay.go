@@ -26,7 +26,9 @@ import (
 	"golang.getoutline.org/sdk/transport"
 )
 
-// this was the buffer size used before, we may consider update it in the future
+// packetMaxSize is the read buffer size per association. Packets larger than this are silently
+// dropped (io.ErrShortBuffer). This is intentionally kept small to bound pool memory; callers
+// should ensure traffic fits within this limit or configure a larger value if needed.
 const packetMaxSize = 2048
 
 // packetBufferPool is used to create buffers to read UDP response packets

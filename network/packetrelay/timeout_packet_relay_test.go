@@ -18,96 +18,100 @@ import (
 	"net/netip"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
 
 func TestTimeoutPacketRelay_Timeout(t *testing.T) {
-	mock := &mockPacketRelay{
-		closeSig: make(chan struct{}),
-	}
-	timeoutRelay, err := NewTimeoutPacketRelay(mock, 50*time.Millisecond)
-	require.NoError(t, err)
+	synctest.Test(t, func(t *testing.T) {
+		mock := &mockPacketRelay{
+			closeSig: make(chan struct{}),
+		}
+		timeoutRelay, err := NewTimeoutPacketRelay(mock, 50*time.Millisecond)
+		require.NoError(t, err)
 
-	sender, receiver, err := timeoutRelay.NewAssociation()
-	require.NoError(t, err)
-	require.NotNil(t, sender)
-	require.NotNil(t, receiver)
+		sender, receiver, err := timeoutRelay.NewAssociation()
+		require.NoError(t, err)
 
-	// Start receiver loop
-	handler := &mockPacketHandler{}
-	go func() {
-		_ = receiver.ReceivePackets(handler)
-	}()
+		go func() {
+			_ = receiver.ReceivePackets(&mockPacketHandler{})
+		}()
 
-	// Wait for timeout
-	time.Sleep(100 * time.Millisecond)
+		// Advance fake time past the timeout; the AfterFunc will fire and close the association.
+		time.Sleep(100 * time.Millisecond)
+		synctest.Wait()
 
-	// Sender should be closed
-	err = sender.SendPacket([]byte("hello"), netip.MustParseAddrPort("1.2.3.4:53"))
-	require.ErrorIs(t, err, ErrClosed)
-
-	// Mock should have been closed
-	require.True(t, mock.isClosed())
+		err = sender.SendPacket([]byte("hello"), netip.MustParseAddrPort("1.2.3.4:53"))
+		require.ErrorIs(t, err, ErrClosed)
+		require.True(t, mock.isClosed())
+	})
 }
 
 func TestTimeoutPacketRelay_ResetOnSend(t *testing.T) {
-	mock := &mockPacketRelay{
-		closeSig: make(chan struct{}),
-	}
-	timeoutRelay, err := NewTimeoutPacketRelay(mock, 100*time.Millisecond)
-	require.NoError(t, err)
-
-	sender, receiver, err := timeoutRelay.NewAssociation()
-	require.NoError(t, err)
-
-	go func() {
-		_ = receiver.ReceivePackets(&mockPacketHandler{})
-	}()
-
-	// Send packets every 50ms (less than 100ms timeout)
-	for i := 0; i < 3; i++ {
-		time.Sleep(50 * time.Millisecond)
-		err = sender.SendPacket([]byte("hello"), netip.MustParseAddrPort("1.2.3.4:53"))
+	synctest.Test(t, func(t *testing.T) {
+		mock := &mockPacketRelay{
+			closeSig: make(chan struct{}),
+		}
+		timeoutRelay, err := NewTimeoutPacketRelay(mock, 100*time.Millisecond)
 		require.NoError(t, err)
-	}
 
-	// Now stop sending and wait for timeout
-	time.Sleep(150 * time.Millisecond)
+		sender, receiver, err := timeoutRelay.NewAssociation()
+		require.NoError(t, err)
 
-	err = sender.SendPacket([]byte("hello"), netip.MustParseAddrPort("1.2.3.4:53"))
-	require.ErrorIs(t, err, ErrClosed)
+		go func() {
+			_ = receiver.ReceivePackets(&mockPacketHandler{})
+		}()
+
+		// Send packets every 50ms — each send resets lastActivity, keeping the timer from firing.
+		for i := 0; i < 3; i++ {
+			time.Sleep(50 * time.Millisecond)
+			err = sender.SendPacket([]byte("hello"), netip.MustParseAddrPort("1.2.3.4:53"))
+			require.NoError(t, err)
+		}
+
+		// Stop sending; the 100ms idle timer will now fire.
+		time.Sleep(150 * time.Millisecond)
+		synctest.Wait()
+
+		err = sender.SendPacket([]byte("hello"), netip.MustParseAddrPort("1.2.3.4:53"))
+		require.ErrorIs(t, err, ErrClosed)
+	})
 }
 
 func TestTimeoutPacketRelay_NoResetOnReceive(t *testing.T) {
-	mock := &mockPacketRelay{
-		closeSig:    make(chan struct{}),
-		handlerChan: make(chan PacketHandler, 1),
-	}
-	timeoutRelay, err := NewTimeoutPacketRelay(mock, 100*time.Millisecond)
-	require.NoError(t, err)
-
-	sender, receiver, err := timeoutRelay.NewAssociation()
-	require.NoError(t, err)
-
-	go func() {
-		_ = receiver.ReceivePackets(&mockPacketHandler{})
-	}()
-
-	// Wait for the mock receiver to start and capture the handler
-	handler := <-mock.handlerChan
-
-	// Simulate receiving packets every 40ms (total time 120ms > 100ms timeout)
-	for i := 0; i < 3; i++ {
-		time.Sleep(40 * time.Millisecond)
-		err = handler.HandlePacket([]byte("reply"), netip.MustParseAddrPort("1.2.3.4:53"))
+	synctest.Test(t, func(t *testing.T) {
+		mock := &mockPacketRelay{
+			closeSig:    make(chan struct{}),
+			handlerChan: make(chan PacketHandler, 1),
+		}
+		timeoutRelay, err := NewTimeoutPacketRelay(mock, 100*time.Millisecond)
 		require.NoError(t, err)
-	}
 
-	// The timeout (100ms) should have fired by now, even though we were receiving packets.
-	err = sender.SendPacket([]byte("hello"), netip.MustParseAddrPort("1.2.3.4:53"))
-	require.ErrorIs(t, err, ErrClosed)
+		sender, receiver, err := timeoutRelay.NewAssociation()
+		require.NoError(t, err)
+
+		go func() {
+			_ = receiver.ReceivePackets(&mockPacketHandler{})
+		}()
+		synctest.Wait()
+
+		// Capture the handler that the mock receiver registered.
+		handler := <-mock.handlerChan
+
+		// Simulate receiving packets every 40ms for 120ms total. Incoming packets must NOT
+		// reset the idle timer; after 100ms the association should be closed regardless.
+		for i := 0; i < 3; i++ {
+			time.Sleep(40 * time.Millisecond)
+			err = handler.HandlePacket([]byte("reply"), netip.MustParseAddrPort("1.2.3.4:53"))
+			require.NoError(t, err)
+		}
+		synctest.Wait()
+
+		err = sender.SendPacket([]byte("hello"), netip.MustParseAddrPort("1.2.3.4:53"))
+		require.ErrorIs(t, err, ErrClosed)
+	})
 }
 
 // Mock implementations
