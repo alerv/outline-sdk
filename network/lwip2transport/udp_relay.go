@@ -23,6 +23,14 @@ import (
 	lwip "github.com/eycorsican/go-tun2socks/core"
 )
 
+// pendingSession is used to coordinate concurrent ReceiveTo calls for the same
+// local address. done is closed once the association attempt finishes; err holds
+// the result. Readers must receive from done before reading err.
+type pendingSession struct {
+	done chan struct{}
+	err  error
+}
+
 type udpRelayHandler struct {
 	mu      sync.Mutex
 	relay   packetrelay.PacketRelay
@@ -30,7 +38,7 @@ type udpRelayHandler struct {
 	// pending tracks active, in-flight association creations for local addresses.
 	// This allows multiple goroutines to wait on a single NewAssociation call,
 	// preventing duplicate connections when concurrent packets arrive on a new port.
-	pending map[string]chan struct{}
+	pending map[string]*pendingSession
 }
 
 var _ lwip.UDPConnHandler = (*udpRelayHandler)(nil)
@@ -40,7 +48,7 @@ func newUDPRelayHandler(pr packetrelay.PacketRelay) *udpRelayHandler {
 	return &udpRelayHandler{
 		relay:   pr,
 		senders: make(map[string]packetrelay.PacketSender, 8),
-		pending: make(map[string]chan struct{}, 8),
+		pending: make(map[string]*pendingSession, 8),
 	}
 }
 
@@ -50,28 +58,43 @@ func (h *udpRelayHandler) Connect(tunConn lwip.UDPConn, _ *net.UDPAddr) error {
 
 // ReceiveTo relays packets from the lwIP TUN device to the proxy. It is called concurrently by lwIP.
 func (h *udpRelayHandler) ReceiveTo(tunConn lwip.UDPConn, data []byte, destAddr *net.UDPAddr) error {
+	sender, err := h.getSender(tunConn)
+	if err != nil {
+		return err
+	}
+	return sender.SendPacket(data, destAddr.AddrPort())
+}
+
+// getSender returns the PacketSender for tunConn's local address, creating an
+// association on first use. Concurrent calls for the same local address share a
+// single NewAssociation call: the first goroutine creates the session while the
+// rest wait on the pending entry, preventing duplicate (leaked) associations.
+func (h *udpRelayHandler) getSender(tunConn lwip.UDPConn) (packetrelay.PacketSender, error) {
 	laddr := tunConn.LocalAddr().String()
 
 	for {
 		h.mu.Lock()
-		// Fast path: association already exists, send the packet immediately.
+		// Fast path: association already exists.
 		if sender, ok := h.senders[laddr]; ok {
 			h.mu.Unlock()
-			return sender.SendPacket(data, destAddr.AddrPort())
+			return sender, nil
 		}
 
 		// If another goroutine is already establishing an association for this local address,
-		// unlock and wait on the pending channel to avoid duplicate session creations.
-		if waitCh, ok := h.pending[laddr]; ok {
+		// unlock and wait on the pending entry to avoid duplicate session creations.
+		if p, ok := h.pending[laddr]; ok {
 			h.mu.Unlock()
-			<-waitCh // Block until the association creation completes
-			continue // Retry the lookup
+			<-p.done // Block until the association creation completes
+			if p.err != nil {
+				return nil, p.err // conn was already closed by the failing goroutine; don't retry
+			}
+			continue // Retry the lookup: sender is now in h.senders
 		}
 
 		// We are the first goroutine to encounter this local address. Register a pending
-		// channel so subsequent concurrent packets on this address will wait for us.
-		waitCh := make(chan struct{})
-		h.pending[laddr] = waitCh
+		// entry so subsequent concurrent packets on this address will wait for us.
+		p := &pendingSession{done: make(chan struct{})}
+		h.pending[laddr] = p
 		h.mu.Unlock()
 
 		// Call newSession (which performs I/O-bound NewAssociation) outside the lock.
@@ -80,16 +103,14 @@ func (h *udpRelayHandler) ReceiveTo(tunConn lwip.UDPConn, data []byte, destAddr 
 
 		h.mu.Lock()
 		delete(h.pending, laddr)
+		p.err = err // written before close(p.done); readers see it after <-p.done
 		if err == nil {
 			h.senders[laddr] = sender
 		}
-		close(waitCh) // Unblock any waiting goroutines
+		close(p.done) // Unblock any waiting goroutines
 		h.mu.Unlock()
 
-		if err != nil {
-			return err
-		}
-		return sender.SendPacket(data, destAddr.AddrPort())
+		return sender, err
 	}
 }
 
