@@ -191,12 +191,19 @@ func (a *interceptAssoc) runDNSReceiver(sender packetrelay.PacketSender, receive
 	_ = receiver.ReceivePackets(handler)
 }
 
+// singlePacketHandler receives the first response packet from a short-lived DNS sub-association,
+// rewrites its source address back to the intercepted local resolver, and forwards it to the parent handler.
+// To ensure the sub-association is truly short-lived, it immediately closes the sub-association's sender
+// upon receiving the first packet, which unblocks and terminates the receiver.
 type singlePacketHandler struct {
 	assoc   *interceptAssoc
 	sender  packetrelay.PacketSender
 	handled bool
 }
 
+// HandlePacket processes the incoming DNS response.
+// It guarantees that only the very first packet is forwarded, ignoring any subsequent packets.
+// It rewrites the source address and then explicitly closes the sender to tear down the short-lived sub-association.
 func (h *singlePacketHandler) HandlePacket(p []byte, source netip.AddrPort) error {
 	if h.handled {
 		return nil // Ignore subsequent packets
