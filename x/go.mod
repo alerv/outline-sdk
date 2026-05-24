@@ -1,8 +1,11 @@
 module golang.getoutline.org/sdk/x
 
-go 1.24.1
+go 1.25.0
 
-toolchain go1.24.8
+// Use the in-tree SDK so outline-cli can reference network/packetrelay before
+// a new SDK release is cut. Remove once a version containing the new
+// PacketRelay API is published and the require below is bumped to it.
+replace golang.getoutline.org/sdk => ../
 
 // Due to https://github.com/OutlineFoundation/outline-sdk/issues/501
 retract [v0.0.4, v0.0.6]
