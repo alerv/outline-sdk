@@ -42,7 +42,7 @@ type OutlineDevice struct {
 
 var configModule = configurl.NewDefaultProviders()
 
-func NewOutlineDevice(transportConfig string) (od *OutlineDevice, err error) {
+func NewOutlineDevice(transportConfig, dnsServerIP string) (od *OutlineDevice, err error) {
 	ip, err := resolveShadowsocksServerIPFromConfig(transportConfig)
 	if err != nil {
 		return nil, err
@@ -54,7 +54,7 @@ func NewOutlineDevice(transportConfig string) (od *OutlineDevice, err error) {
 	if od.sd, err = configModule.NewStreamDialer(context.TODO(), transportConfig); err != nil {
 		return nil, fmt.Errorf("failed to create TCP dialer: %w", err)
 	}
-	if od.pr, err = newOutlinePacketRelay(transportConfig); err != nil {
+	if od.pr, err = newOutlinePacketRelay(transportConfig, dnsServerIP); err != nil {
 		return nil, fmt.Errorf("failed to create delegate UDP relay: %w", err)
 	}
 	if od.IPDevice, err = lwip2transport.ConfigureDeviceWithRelay(od.sd, od.pr); err != nil {

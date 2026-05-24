@@ -42,7 +42,7 @@ func (app App) Run() error {
 	}
 	defer enableIPv6(prevIPv6)
 
-	ss, err := NewOutlineDevice(*app.TransportConfig)
+	ss, err := NewOutlineDevice(*app.TransportConfig, app.RoutingConfig.DNSServerIP)
 	if err != nil {
 		return fmt.Errorf("failed to create OutlineDevice: %w", err)
 	}
