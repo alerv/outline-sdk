@@ -30,6 +30,15 @@ import (
 	"golang.getoutline.org/sdk/x/connectivity"
 )
 
+// dnsSentinelIP is the fake link-local address we publish as the system
+// resolver. Apps send DNS queries here; the VPN intercepts them and rewrites
+// the destination to the actual upstream resolver. Using a non-routable
+// link-local address makes the interception robust: if the VPN ever drops,
+// DNS fails closed instead of leaking to a real public resolver, and the
+// interceptor stays free to swap in alternative resolution paths (local
+// recursion, encrypted DNS, etc.) without touching system config.
+const dnsSentinelIP = "169.254.0.53"
+
 // dnsAssociationTimeout is the idle timeout applied to the DNS leg of the
 // intercept relay. DNS queries are one-shot request/response; keeping the
 // upstream association alive longer than this just leaks state.
@@ -47,7 +56,7 @@ type outlinePacketRelay struct {
 	remotePl         transport.PacketListener
 }
 
-func newOutlinePacketRelay(transportConfig, dnsServerIP string) (opr *outlinePacketRelay, err error) {
+func newOutlinePacketRelay(transportConfig, remoteDNSIP string) (opr *outlinePacketRelay, err error) {
 	opr = &outlinePacketRelay{}
 
 	if opr.remotePl, err = configurl.NewDefaultProviders().NewPacketListener(context.TODO(), transportConfig); err != nil {
@@ -67,14 +76,19 @@ func newOutlinePacketRelay(transportConfig, dnsServerIP string) (opr *outlinePac
 	if err != nil {
 		return nil, fmt.Errorf("failed to wrap UDP packet relay with default timeout: %w", err)
 	}
-	dnsAddr, err := netip.ParseAddrPort(net.JoinHostPort(dnsServerIP, "53"))
+	localDNSAddr, err := netip.ParseAddrPort(net.JoinHostPort(dnsSentinelIP, "53"))
 	if err != nil {
-		return nil, fmt.Errorf("invalid DNS server address %q: %w", dnsServerIP, err)
+		return nil, fmt.Errorf("invalid DNS sentinel address %q: %w", dnsSentinelIP, err)
 	}
-	// Route DNS traffic (destined at the configured system resolver) through
-	// short-lived associations on dnsRelay; everything else stays on the
-	// longer-lived defaultRelay association.
-	opr.remote = dnsintercept.NewInterceptDNSPacketRelay(dnsRelay, defaultRelay, dnsAddr, dnsAddr)
+	remoteDNSAddr, err := netip.ParseAddrPort(net.JoinHostPort(remoteDNSIP, "53"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid remote DNS address %q: %w", remoteDNSIP, err)
+	}
+	// Apps see dnsSentinelIP as their resolver. The intercept relay matches
+	// that destination and rewrites it to the real remote resolver before
+	// forwarding through dnsRelay (short-lived associations). Everything else
+	// goes through defaultRelay (long-lived).
+	opr.remote = dnsintercept.NewInterceptDNSPacketRelay(dnsRelay, defaultRelay, localDNSAddr, remoteDNSAddr)
 
 	if opr.fallback, err = dnstruncate.NewPacketRelay(); err != nil {
 		return nil, fmt.Errorf("failed to create DNS truncate packet relay: %w", err)

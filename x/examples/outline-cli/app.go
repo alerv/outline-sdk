@@ -26,5 +26,7 @@ type RoutingConfig struct {
 	TunGatewayCIDR       string
 	RoutingTableID       int
 	RoutingTablePriority int
-	DNSServerIP          string
+	// DNSServerIP is the real upstream resolver intercepted DNS queries are
+	// rewritten to. The OS itself sees only the in-VPN dnsSentinelIP.
+	DNSServerIP string
 }

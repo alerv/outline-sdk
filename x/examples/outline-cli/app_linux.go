@@ -63,7 +63,10 @@ func (app App) Run() error {
 		logging.Info.Printf("OutlineDevice -> tun stopped: %v %v\n", written, err)
 	}()
 
-	err = setSystemDNSServer(app.RoutingConfig.DNSServerIP)
+	// Point the system at the in-VPN DNS sentinel; the intercept relay
+	// rewrites the destination to RoutingConfig.DNSServerIP (the real
+	// upstream resolver) before forwarding.
+	err = setSystemDNSServer(dnsSentinelIP)
 	if err != nil {
 		return fmt.Errorf("failed to configure system DNS: %w", err)
 	}
